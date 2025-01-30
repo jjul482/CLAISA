@@ -24,7 +24,8 @@ import torch
 class Config():
     retrain = True
     tb_log = False
-    device = torch.device("cuda:0")
+    #device = torch.device("cuda:0")
+    device = torch.device("cuda:4")
 #     device = torch.device("cpu")
     
     max_epochs = 20
