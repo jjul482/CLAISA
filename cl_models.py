@@ -19,39 +19,7 @@ from torch.distributions.normal import Normal
 logger = logging.getLogger(__name__)
 global_taskid = 0
 class SparseDispatcher(object):
-    """Helper for implementing a mixture of adapters.
-    The purpose of this class is to create input minibatches for the
-    adapters and to combine the results of the adapters to form a unified
-    output tensor.
-    There are two functions:
-    dispatch - take an input Tensor and create input Tensors for each adapter.
-    combine - take output Tensors from each adapter and form a combined output
-      Tensor.  Outputs from different adapters for the same batch element are
-      summed together, weighted by the provided "gates".
-    The class is initialized with a "gates" Tensor, which specifies which
-    batch elements go to which adapters, and the weights to use when combining
-    the outputs.  Batch element b is sent to adapter e iff gates[b, e] != 0.
-    The inputs and outputs are all two-dimensional [batch, depth].
-    Caller is responsible for collapsing additional dimensions prior to
-    calling this class and reshaping the output to the original shape.
-    See common_layers.reshape_like().
-    Example use:
-    gates: a float32 `Tensor` with shape `[batch_size, num_adapters]`
-    inputs: a float32 `Tensor` with shape `[batch_size, input_size]`
-    adapters: a list of length `num_adapters` containing sub-networks.
-    dispatcher = SparseDispatcher(num_adapters, gates)
-    adapter_inputs = dispatcher.dispatch(inputs)
-    adapter_outputs = [adapters[i](adapter_inputs[i]) for i in range(num_adapters)]
-    outputs = dispatcher.combine(adapter_outputs)
-    The preceding code sets the output for a particular example b to:
-    output[b] = Sum_i(gates[b, i] * adapters[i](inputs[b]))
-    This class takes advantage of sparsity in the gate matrix by including in the
-    `Tensor`s for adapter i only the batch elements for which `gates[b, i] > 0`.
-    """
-
     def __init__(self, num_adapters, gates):
-        """Create a SparseDispatcher."""
-
         self._gates = gates
         self._num_adapters = num_adapters
 
@@ -68,34 +36,12 @@ class SparseDispatcher(object):
         self._nonzero_gates = torch.gather(gates_exp, 1, self._adapter_index)
 
     def dispatch(self, inp):
-        """Create one input Tensor for each adapter.
-        The `Tensor` for a adapter `i` contains the slices of `inp` corresponding
-        to the batch elements `b` where `gates[b, i] > 0`.
-        Args:
-          inp: a `Tensor` of shape "[batch_size, <extra_input_dims>]`
-        Returns:
-          a list of `num_adapters` `Tensor`s with shapes
-            `[adapter_batch_size_i, <extra_input_dims>]`.
-        """
-
         # assigns samples to adapters whose gate is nonzero
 
         inp_exp = inp[self._batch_index].squeeze(1)
         return torch.split(inp_exp, self._part_sizes, dim=0)
 
     def combine(self, adapter_out, multiply_by_gates=True):
-        """Sum together the adapter output, weighted by the gates.
-        The slice corresponding to a particular batch element `b` is computed
-        as the sum over all adapters `i` of the adapter output, weighted by the
-        corresponding gate values.  If `multiply_by_gates` is set to False, the
-        gate values are ignored.
-        Args:
-          adapter_out: a list of `num_adapters` `Tensor`s, each with shape
-            `[adapter_batch_size_i, <extra_output_dims>]`.
-          multiply_by_gates: a boolean
-        Returns:
-          a `Tensor` with shape `[batch_size, <extra_output_dims>]`.
-        """
         # apply exp to adapter outputs, so we are not longer in log space
 
         stitched = torch.cat(adapter_out, 0)
@@ -111,22 +57,11 @@ class SparseDispatcher(object):
         return combined
 
     def adapter_to_gates(self):
-        """Gate values corresponding to the examples in the per-adapter `Tensor`s.
-        Returns:
-          a list of `num_adapters` one-dimensional `Tensor`s with type `tf.float32`
-              and shapes `[adapter_batch_size_i]`
-        """
         # split nonzero gates for each adapter
         return torch.split(self._nonzero_gates, self._part_sizes, dim=0)
 
 
 class CausalSelfAttention(nn.Module):
-    """
-    A vanilla multi-head masked self-attention layer with a projection at the end.
-    It is possible to use torch.nn.MultiheadAttention here but I am including an
-    explicit implementation here to show that there is nothing too scary here.
-    """
-
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
@@ -205,22 +140,6 @@ class Block(nn.Module):
         )
     
     def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values):
-        """Helper function to NoisyTopKGating.
-        Computes the probability that value is in top k, given different random noise.
-        This gives us a way of backpropagating from a loss that balances the number
-        of times each expert is in the top k experts per example.
-        In the case of no noise, pass in None for noise_stddev, and the result will
-        not be differentiable.
-        Args:
-        clean_values: a `Tensor` of shape [batch, n].
-        noisy_values: a `Tensor` of shape [batch, n].  Equal to clean values plus
-          normally distributed noise with standard deviation noise_stddev.
-        noise_stddev: a `Tensor` of shape [batch, n], or None
-        noisy_top_values: a `Tensor` of shape [batch, m].
-           "values" Output of tf.top_k(noisy_top_values, m).  m >= k+1
-        Returns:
-        a `Tensor` of shape [batch, n].
-        """
         batch = clean_values.size(0)
         m = noisy_top_values.size(1)
         top_values_flat = noisy_top_values.flatten()
@@ -239,16 +158,6 @@ class Block(nn.Module):
         return prob
     
     def noisy_top_k_gating(self, x, train, w_gate, w_noise, noise_epsilon=1e-2):
-        """Noisy top-k gating.
-          See paper: https://arxiv.org/abs/1701.06538.
-          Args:
-            x: input Tensor with shape [batch_size, input_size]
-            train: a boolean - we only add noise at training time.
-            noise_epsilon: a float
-          Returns:
-            gates: a Tensor with shape [batch_size, num_adapter]
-            load: a Tensor with shape [num_adapter]
-        """
 
         clean_logits = x @ w_gate.to(x)
         if self.noisy_gating and train:
@@ -309,9 +218,7 @@ class Block(nn.Module):
     #     x = x + self.mlp(self.ln2(x))
     #     return x
 
-class TrAISformer(nn.Module):
-    """Transformer for AIS trajectories."""
-
+class AdapterModel(nn.Module):
     def __init__(self, config, partition_model = None):
         super().__init__()
 
@@ -409,12 +316,6 @@ class TrAISformer(nn.Module):
             module.weight.data.fill_(1.0)
 
     def configure_optimizers(self, train_config):
-        """
-        This long function is unfortunately doing something very simple and is being very defensive:
-        We are separating out all parameters of the model into two buckets: those that will experience
-        weight decay for regularization and those that won't (biases, and layernorm/embedding weights).
-        We are then returning the PyTorch optimizer object.
-        """
 
         # separate out all parameters to those that will and won't experience regularizing weight decay
         decay = set()
@@ -456,16 +357,6 @@ class TrAISformer(nn.Module):
    
     
     def to_indexes(self, x, mode="uniform"):
-        """Convert tokens to indexes.
-        
-        Args:
-            x: a Tensor of size (batchsize, seqlen, 4). x has been truncated 
-                to [0,1).
-            model: currenly only supports "uniform".
-        
-        Returns:
-            idxs: a Tensor (dtype: Long) of indexes.
-        """
         bs, seqlen, data_dim = x.shape
         if mode == "uniform":
             idxs = (x*self.att_sizes).long()
@@ -482,17 +373,6 @@ class TrAISformer(nn.Module):
     
     
     def forward(self, x, masks = None, with_targets=False, return_loss_tuple=False):
-        """
-        Args:
-            x: a Tensor of size (batchsize, seqlen, 4). x has been truncated 
-                to [0,1).
-            masks: a Tensor of the same size of x. masks[idx] = 0. if 
-                x[idx] is a padding.
-            with_targets: if True, inputs = x[:,:-1,:], targets = x[:,1:,:], 
-                otherwise inputs = x.
-        Returns: 
-            logits, loss
-        """
         
         if self.mode in ("mlp_pos","mlp",):
             idxs, idxs_uniform = x, x # use the real-values of x.

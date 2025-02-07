@@ -1,6 +1,4 @@
-"""Utility functions based on minGPT and trAISformer
-    
-"""
+
 import numpy as np
 import os
 import math

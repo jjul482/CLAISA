@@ -1,6 +1,4 @@
 
-"""Pytorch implementation of CLAISA, built upon trAISformer.
-"""
 import numpy as np
 from numpy import linalg
 import matplotlib.pyplot as plt
@@ -22,7 +20,7 @@ from torch.utils.data import Dataset, DataLoader
 import trainers, datasets, utils
 #import models
 import cl_models as models
-from config_trAISformer import Config
+from config import Config
 
 cf = Config()
 TB_LOG = cf.tb_log
@@ -90,7 +88,7 @@ if __name__ == "__main__":
 
     ## Model
     # ===============================
-    model = models.TrAISformer(cf, partition_model=None)
+    model = models.AdapterModel(cf, partition_model=None)
     print(f"Device: {cf.device}")
     ## Trainer
     # ===============================
@@ -174,5 +172,3 @@ if __name__ == "__main__":
     plt.ylim([0, 5])
     # plt.ylim([0,pred_errors.max()+0.5])
     plt.savefig(cf.savedir + "prediction_error.png")
-
-    # Yeah, done!!!

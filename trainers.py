@@ -1,9 +1,4 @@
 
-"""Boilerplate for training a neural network.
-
-References:
-    https://github.com/karpathy/minGPT
-"""
 
 import os
 import math
@@ -20,7 +15,7 @@ from torch.utils.data.dataloader import DataLoader
 from torch.nn import functional as F
 import utils
 
-from trAISformer import TB_LOG
+from main import TB_LOG
 
 logger = logging.getLogger(__name__)
 

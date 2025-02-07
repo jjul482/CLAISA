@@ -1,9 +1,4 @@
-"""Models for TrAISformer.
-    https://arxiv.org/abs/2109.03958
 
-The code is built upon:
-    https://github.com/karpathy/minGPT
-"""
 
 import math
 import logging
@@ -18,11 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class CausalSelfAttention(nn.Module):
-    """
-    A vanilla multi-head masked self-attention layer with a projection at the end.
-    It is possible to use torch.nn.MultiheadAttention here but I am including an
-    explicit implementation here to show that there is nothing too scary here.
-    """
 
     def __init__(self, config):
         super().__init__()
@@ -81,8 +71,7 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln2(x))
         return x
 
-class TrAISformer(nn.Module):
-    """Transformer for AIS trajectories."""
+class AdapterModel(nn.Module):
 
     def __init__(self, config, partition_model = None):
         super().__init__()
@@ -181,12 +170,6 @@ class TrAISformer(nn.Module):
             module.weight.data.fill_(1.0)
 
     def configure_optimizers(self, train_config):
-        """
-        This long function is unfortunately doing something very simple and is being very defensive:
-        We are separating out all parameters of the model into two buckets: those that will experience
-        weight decay for regularization and those that won't (biases, and layernorm/embedding weights).
-        We are then returning the PyTorch optimizer object.
-        """
 
         # separate out all parameters to those that will and won't experience regularizing weight decay
         decay = set()
@@ -228,16 +211,6 @@ class TrAISformer(nn.Module):
    
     
     def to_indexes(self, x, mode="uniform"):
-        """Convert tokens to indexes.
-        
-        Args:
-            x: a Tensor of size (batchsize, seqlen, 4). x has been truncated 
-                to [0,1).
-            model: currenly only supports "uniform".
-        
-        Returns:
-            idxs: a Tensor (dtype: Long) of indexes.
-        """
         bs, seqlen, data_dim = x.shape
         if mode == "uniform":
             idxs = (x*self.att_sizes).long()
@@ -254,17 +227,6 @@ class TrAISformer(nn.Module):
     
     
     def forward(self, x, masks = None, with_targets=False, return_loss_tuple=False):
-        """
-        Args:
-            x: a Tensor of size (batchsize, seqlen, 4). x has been truncated 
-                to [0,1).
-            masks: a Tensor of the same size of x. masks[idx] = 0. if 
-                x[idx] is a padding.
-            with_targets: if True, inputs = x[:,:-1,:], targets = x[:,1:,:], 
-                otherwise inputs = x.
-        Returns: 
-            logits, loss
-        """
         
         if self.mode in ("mlp_pos","mlp",):
             idxs, idxs_uniform = x, x # use the real-values of x.
