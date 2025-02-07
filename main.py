@@ -21,9 +21,27 @@ import trainers, datasets, utils
 #import models
 import cl_models as models
 from config import Config
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--dataset', type=str, default='gulfofmexico', help='dataset name')
+parser.add_argument('--gpu', type=int, default=0)
+parser.add_argument('--epochs', type=int, default=20)
+parser.add_argument('--batch_size', type=int, default=32)
+parser.add_argument('--n_samples', type=int, default=16)
+parser.add_argument('--adapter_num', type=int, default=10)
+parser.add_argument('--max_seqlen', type=int, default=120)
+args = parser.parse_args()
 
 cf = Config()
-TB_LOG = cf.tb_log
+cf.dataset_name = args.dataset
+cf.gpu = args.gpu
+cf.max_epochs = args.epochs
+cf.batch_size = args.batch_size
+cf.n_samples = args.n_samples
+cf.adapter_num = args.adapter_num
+cf.max_seqlen = args.max_seqlen
+TB_LOG = args.tb_log
 if TB_LOG:
     from torch.utils.tensorboard import SummaryWriter
 
