@@ -9,15 +9,15 @@ class Config():
     tb_log = False
     gpu = 0
     device = torch.device(f"cuda:{gpu}")
-#     device = torch.device("cpu")
+    #device = torch.device("cpu")
     
-    max_epochs = 20
+    max_epochs = 15
     batch_size = 32
     n_samples = 16
     adapter_num = 10
     
     init_seqlen = 18
-    max_seqlen = 120
+    max_seqlen = 100
     min_seqlen = 36
     
     dataset_name = "ct_dma"
@@ -36,18 +36,18 @@ class Config():
         n_lon_embd = 256
         n_sog_embd = 128
         n_cog_embd = 128
-    
-        lat_min = 55.5
-        lat_max = 58.0
-        lon_min = 10.3
-        lon_max = 13
 
+        lat_min = None
+        lat_max = None
+        lon_min = None
+        lon_max = None
     
     #===========================================================================
     # Model and sampling flags
     mode = "pos"  #"pos", "pos_grad", "mlp_pos", "mlpgrid_pos", "velo", "grid_l2", "grid_l1", 
                             # "ce_vicinity", "gridcont_grid", "gridcont_real", "gridcont_gridsin", "gridcont_gridsigmoid"
     sample_mode =  "pos_vicinity" # "pos", "pos_vicinity" or "velo"
+    cl = True
     top_k = 10 # int or None 
     r_vicinity = 40 # int
     
@@ -63,10 +63,10 @@ class Config():
     
     # Data flags
     #===================================================
-    datadir = f"./data/{dataset_name}/"
-    trainset_name = f"{dataset_name}_train.pkl"
-    validset_name = f"{dataset_name}_valid.pkl"
-    testset_name = f"{dataset_name}_test.pkl"
+    datadir = None
+    trainset_name = f"ct_dma_train.pkl"
+    validset_name = f"ct_dma_valid.pkl"
+    testset_name = f"ct_dma_test.pkl"
     
     
     # model parameters
@@ -75,6 +75,8 @@ class Config():
     n_layer = 8
     full_size = lat_size + lon_size + sog_size + cog_size
     n_embd = n_lat_embd + n_lon_embd + n_sog_embd + n_cog_embd
+    n_embd_pos = n_lat_embd + n_lon_embd
+    n_embd_mot = n_sog_embd + n_cog_embd
     # base GPT config, params common to all GPT versions
     embd_pdrop = 0.1
     resid_pdrop = 0.1
@@ -93,14 +95,10 @@ class Config():
     num_workers = 4 # for DataLoader
     
     filename = f"{dataset_name}"\
-        + f"-{mode}-{sample_mode}-{top_k}-{r_vicinity}"\
-        + f"-blur-{blur}-{blur_learnable}-{blur_n}-{blur_loss_w}"\
         + f"-data_size-{lat_size}-{lon_size}-{sog_size}-{cog_size}"\
         + f"-embd_size-{n_lat_embd}-{n_lon_embd}-{n_sog_embd}-{n_cog_embd}"\
-        + f"-head-{n_head}-{n_layer}"\
-        + f"-bs-{batch_size}"\
-        + f"-lr-{learning_rate}"\
         + f"-seqlen-{init_seqlen}-{max_seqlen}"
     savedir = "./results/"+filename+"/"
     
+    log_path = f"./results/{dataset_name}.txt"
     ckpt_path = os.path.join(savedir,"model.pt")   

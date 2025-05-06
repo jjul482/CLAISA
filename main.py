@@ -24,7 +24,7 @@ from config import Config
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', type=str, default='gulfofmexico', help='dataset name')
+parser.add_argument('--dataset', type=str, default='denmark', help='dataset name')
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--epochs', type=int, default=20)
 parser.add_argument('--batch_size', type=int, default=32)
@@ -41,11 +41,70 @@ cf.batch_size = args.batch_size
 cf.n_samples = args.n_samples
 cf.adapter_num = args.adapter_num
 cf.max_seqlen = args.max_seqlen
-TB_LOG = args.tb_log
+cf.datadir = f"./data/ct_dma/{cf.dataset_name}"
+cf.filename = f"{cf.dataset_name}"\
+        + f"-data_size-{cf.lat_size}-{cf.lon_size}-{cf.sog_size}-{cf.cog_size}"\
+        + f"-embd_size-{cf.n_lat_embd}-{cf.n_lon_embd}-{cf.n_sog_embd}-{cf.n_cog_embd}"\
+        + f"-seqlen-{cf.init_seqlen}-{cf.max_seqlen}"
+cf.savedir = "./results/"+cf.filename+"/"
+cf.log_path = f"./results/{cf.dataset_name}.txt"
+cf.ckpt_path = os.path.join(cf.savedir,"model.pt")  
+
+if cf.dataset_name.lower() == 'gulfofmexico':
+    #gulfofmexico
+    cf.lat_min = 27.0
+    cf.lat_max = 30.0
+    cf.lon_min = -90.5
+    cf.lon_max = -87.5
+elif cf.dataset_name.lower() == 'eastcoast':
+    cf.lat_min = 26.23
+    cf.lat_max = 45.67
+    cf.lon_min = -81.51
+    cf.lon_max = -50.99
+elif cf.dataset_name.lower() == 'piraeus':
+    cf.lat_min = 37.5
+    cf.lat_max = 38.1
+    cf.lon_min = 23.0
+    cf.lon_max = 23.9
+elif cf.dataset_name.lower() == 'denmark':
+    cf.lat_min = 55.0
+    cf.lat_max = 58.0
+    cf.lon_min = 10.0
+    cf.lon_max = 13.0
+TB_LOG = cf.tb_log
 if TB_LOG:
     from torch.utils.tensorboard import SummaryWriter
-
     tb = SummaryWriter()
+
+
+def plot_test(Vs, config, phase):
+    #Vs = Vs['train']
+    LAT_MIN,LAT_MAX,LON_MIN,LON_MAX = config.lat_min,config.lat_max,config.lon_min,config.lon_max
+    LAT_RANGE = LAT_MAX - LAT_MIN
+    LON_RANGE = LON_MAX - LON_MIN
+    FIG_DPI = 150
+    FIG_W = 960
+    FIG_H = int(960*LAT_RANGE/LON_RANGE)
+    plt.figure(figsize=(FIG_W/FIG_DPI, FIG_H/FIG_DPI), dpi=FIG_DPI)
+    cmap = plt.cm.get_cmap('Blues')
+    N = len(Vs)
+    for d_i in range(N):
+        key = Vs[d_i]
+        c = cmap(float(d_i)/(N-1))
+        #tmp = key['traj']
+        tmp = key[0]
+        #print(tmp)
+        v_lat = tmp[:,0]*LAT_RANGE + LAT_MIN
+        v_lon = tmp[:,1]*LON_RANGE + LON_MIN
+    #     plt.plot(v_lon,v_lat,linewidth=0.8)
+        plt.plot(v_lon,v_lat,color=c,linewidth=0.8)
+
+    plt.xlim([LON_MIN,LON_MAX])
+    plt.ylim([LAT_MIN,LAT_MAX])
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    plt.tight_layout()
+    plt.savefig(f"{phase}.png")
 
 # make deterministic
 utils.set_seed(42)
@@ -81,24 +140,26 @@ if __name__ == "__main__":
             except:
                 moving_idx = len(V["traj"]) - 1  # This track will be removed
             V["traj"] = V["traj"][moving_idx:, :]
+            if len(V["traj"]) > cf.max_seqlen:
+                V["traj"] = V["traj"][:cf.max_seqlen]
         Data[phase] = [x for x in l_pred_errors if not np.isnan(x["traj"]).any() and len(x["traj"]) > cf.min_seqlen]
-        print(len(l_pred_errors), len(Data[phase]))
         print(f"Length: {len(Data[phase])}")
         print("Creating pytorch dataset...")
-        # Latter in this scipt, we will use inputs = x[:-1], targets = x[1:], hence
+        # Later in this scipt, we will use inputs = x[:-1], targets = x[1:], hence
         # max_seqlen = cf.max_seqlen + 1.
         if cf.mode in ("pos_grad", "grad"):
             aisdatasets[phase] = datasets.AISDataset_grad(Data[phase],
-                                                          max_seqlen=cf.max_seqlen + 1,
+                                                          max_seqlen=cf.max_seqlen+1,
                                                           device=cf.device)
         else:
             aisdatasets[phase] = datasets.AISDataset(Data[phase],
-                                                     max_seqlen=cf.max_seqlen + 1,
+                                                     max_seqlen=cf.max_seqlen+1,
                                                      device=cf.device)
         if phase == "test":
             shuffle = False
         else:
             shuffle = True
+        plot_test(aisdatasets[phase], cf, phase)
         aisdls[phase] = DataLoader(aisdatasets[phase],
                                    batch_size=cf.batch_size,
                                    shuffle=shuffle)
@@ -112,6 +173,7 @@ if __name__ == "__main__":
     # ===============================
     trainer = trainers.Trainer(
         model, aisdatasets["train"], aisdatasets["valid"], cf, savedir=cf.savedir, device=cf.device, aisdls=aisdls, INIT_SEQLEN=init_seqlen)
+    trainer.plot_valid()
 
     ## Training
     # ===============================
@@ -155,11 +217,16 @@ if __name__ == "__main__":
             l_mean_errors.append(error_ens.mean(dim=-1))
             l_masks.append(masks[:, cf.init_seqlen:])
 
+    #l_mean = [x.values for x in l_mean_errors]
+    l_mean = l_mean_errors
     l_min = [x.values for x in l_min_errors]
     m_masks = torch.cat(l_masks, dim=0)
     min_errors = torch.cat(l_min, dim=0) * m_masks
+    mean_errors = torch.cat(l_mean, dim=0) * m_masks
     pred_errors = min_errors.sum(dim=0) / m_masks.sum(dim=0)
     pred_errors = pred_errors.detach().cpu().numpy()
+
+    # Print final errors?
 
     ## Plot
     # ===============================

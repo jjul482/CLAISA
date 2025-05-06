@@ -61,7 +61,7 @@ class SparseDispatcher(object):
         return torch.split(self._nonzero_gates, self._part_sizes, dim=0)
 
 
-class CausalSelfAttention(nn.Module):
+class PositionAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
@@ -99,7 +99,63 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_drop(self.proj(y))
         return y
 
-class Block(nn.Module):
+class MotionAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd_mot % config.n_head == 0
+        # key, query, value projections for all heads
+        self.key = nn.Linear(config.n_embd_mot, config.n_embd_mot)
+        self.query = nn.Linear(config.n_embd_mot, config.n_embd_mot)
+        self.value = nn.Linear(config.n_embd_mot, config.n_embd_mot)
+        # regularization
+        self.attn_drop = nn.Dropout(config.attn_pdrop)
+        self.resid_drop = nn.Dropout(config.resid_pdrop)
+        # output projection
+        self.proj = nn.Linear(config.n_embd_mot, config.n_embd_mot)
+        # causal mask to ensure that attention is only applied to the left in the input sequence
+        self.register_buffer("mask", torch.tril(torch.ones(config.max_seqlen, config.max_seqlen))
+                                     .view(1, 1, config.max_seqlen, config.max_seqlen))
+        self.n_head = config.n_head
+
+    def forward(self, x, layer_past=None):
+        B, T, C = x.size()
+
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        k = self.key(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        att = att.masked_fill(self.mask[:,:,:T,:T] == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        att = self.attn_drop(att)
+        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+
+        # output projection
+        y = self.resid_drop(self.proj(y))
+        return y
+
+class MotionBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(config.n_embd_mot) # 256
+        self.ln2 = nn.LayerNorm(config.n_embd_mot)
+        self.attn = MotionAttention(config)
+        self.mlp = nn.Sequential(
+            nn.Linear(config.n_embd_mot, 4 * config.n_embd_mot),
+            nn.GELU(),
+            nn.Linear(4 * config.n_embd_mot, config.n_embd_mot),
+            nn.Dropout(config.resid_pdrop),
+        )
+
+    def forward(self, x):
+        x = x + self.attn(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
+        return x
+
+class PositionBlock(nn.Module):
     """ Transformer block with CL adapters """
 
     def __init__(self, config):
@@ -131,7 +187,7 @@ class Block(nn.Module):
         
         self.ln1 = nn.LayerNorm(config.n_embd)
         self.ln2 = nn.LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
+        self.attn = PositionAttention(config)
         self.mlp = nn.Sequential(
             nn.Linear(config.n_embd, 4 * config.n_embd),
             nn.GELU(),
@@ -181,8 +237,8 @@ class Block(nn.Module):
         return gates, load
     
     def forward(self, x: torch.Tensor):
-        x = x + self.attn(self.ln1(x))
-        if global_taskid is not None:
+        x = x + self.attn(self.ln1(x)) # LayerNorm -> Attn
+        if global_taskid is not None: # task=0
             x_re = x.permute(1, 0, 2)[:, 0, :]
             gates, load = self.noisy_top_k_gating(x_re, self.is_train, self.router_list[global_taskid],
                                                   self.w_noise_list[global_taskid])
@@ -208,20 +264,32 @@ class Block(nn.Module):
 
             y = dispatcher.combine(adapter_outputs)
             y = y.view(x.shape[1], x.shape[0], x.shape[2])
-            x = x + self.mlp(self.ln2(x)) + y.permute(1, 0, 2)
+            x = x + self.mlp(self.ln2(x)) + y.permute(1, 0, 2) #LayerNorm -> MLP + Adapt
         else:
             x = x + self.mlp(self.ln2(x))
         return x
+    
+class MotionPositionBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.posBlock = PositionBlock(config)
+        self.motionBlock = MotionBlock(config)
+    
+    def forward(self, x: torch.Tensor):
+        x_pos = x[:, :, :self.config.n_embd_pos]
+        x_mot = x[:, :, self.config.n_embd_pos:]
+        x = self.motionBlock(x_mot)
+        x = torch.concat([x, x_pos], dim=2)
+        x = self.posBlock(x)
+        return x
 
-    # def forward(self, x):
-    #     x = x + self.attn(self.ln1(x))
-    #     x = x + self.mlp(self.ln2(x))
-    #     return x
 
 class AdapterModel(nn.Module):
     def __init__(self, config, partition_model = None):
         super().__init__()
 
+        self.kb_training = True
         self.lat_size = config.lat_size
         self.lon_size = config.lon_size
         self.sog_size = config.sog_size
@@ -288,7 +356,7 @@ class AdapterModel(nn.Module):
         self.drop = nn.Dropout(config.embd_pdrop)
         
         # transformer
-        self.blocks = nn.Sequential(*[Block(config) for _ in range(config.n_layer)])
+        self.blocks = nn.Sequential(*[MotionPositionBlock(config) for _ in range(config.n_layer)])
         
         
         # decoder head
@@ -302,6 +370,21 @@ class AdapterModel(nn.Module):
         self.apply(self._init_weights)
 
         logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
+
+    def adapters_only(self, training):
+        if training:
+            self.pos_emb.requires_grad(False)
+            self.drop.eval()
+            self.blocks.eval()
+            self.ln_f.eval()
+            self.head.eval()
+        else:
+            self.pos_emb.requires_grad(True)
+            self.drop.train()
+            self.blocks.train()
+            self.ln_f.train()
+            self.head.train()
+
 
     def get_max_seqlen(self):
         return self.max_seqlen
@@ -373,7 +456,6 @@ class AdapterModel(nn.Module):
     
     
     def forward(self, x, masks = None, with_targets=False, return_loss_tuple=False):
-        
         if self.mode in ("mlp_pos","mlp",):
             idxs, idxs_uniform = x, x # use the real-values of x.
         else:            
@@ -390,22 +472,22 @@ class AdapterModel(nn.Module):
             inputs_real = x
             inputs = idxs
             targets = None
-            
         batchsize, seqlen, _ = inputs.size()
         assert seqlen <= self.max_seqlen, "Cannot forward, model block size is exhausted."
 
         # forward the GPT model
-        lat_embeddings = self.lat_emb(inputs[:,:,0]) # (bs, seqlen, lat_size)
+        lat_embeddings = self.lat_emb(inputs[:,:,0]) # (bs, seqlen, n_lat_emb)
         lon_embeddings = self.lon_emb(inputs[:,:,1]) 
         sog_embeddings = self.sog_emb(inputs[:,:,2]) 
         cog_embeddings = self.cog_emb(inputs[:,:,3])      
         token_embeddings = torch.cat((lat_embeddings, lon_embeddings, sog_embeddings, cog_embeddings),dim=-1)
             
-        position_embeddings = self.pos_emb[:, :seqlen, :] # each position maps to a (learnable) vector (1, seqlen, n_embd)
-        fea = self.drop(token_embeddings + position_embeddings)
+        p_emb = self.pos_emb[:, :seqlen, :] # each position maps to a (learnable) vector (1, seqlen, n_embd)
+        fea = self.drop(token_embeddings + p_emb)
         fea = self.blocks(fea)
         fea = self.ln_f(fea) # (bs, seqlen, n_embd)
         logits = self.head(fea) # (bs, seqlen, full_size) or (bs, seqlen, n_embd)
+
         
         lat_logits, lon_logits, sog_logits, cog_logits =\
             torch.split(logits, (self.lat_size, self.lon_size, self.sog_size, self.cog_size), dim=-1)
